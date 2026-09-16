@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# the demo target is a build artifact - `cd examples/dummy && make` regenerates it
+examples/dummy/dummy
+
+# layout snapshots are usually project-specific; uncomment to commit them
+# layout.json

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heapscope"
+version = "0.1.0"
+description = "Headless glibc heap introspection and assertions for exploit development"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Robin Marchand" }]
+keywords = ["ctf", "pwn", "exploit", "glibc", "heap", "malloc", "security", "reverse-engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+heapscope = "heapscope.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/"
+
+[tool.setuptools.packages.find]
+include = ["heapscope*"]
