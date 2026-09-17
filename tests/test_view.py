@@ -19,56 +19,20 @@ from heapscope.heap import tcache_size_for_index
 from heapscope.view import (
     FORMAT,
     HeapSnapshot,
-    _classify,
     _h,
     load_snapshots,
     make_server,
     payload,
 )
 
-LIBC_BASE = 0x7FFFF7C00000
-LIBC_END = LIBC_BASE + 0x200000
-
-#: A tcache head holding stale chunk data. Above 2**53, so it does not survive
-#: a trip through a JavaScript number.
-STALE_HEAD = 0x4343434616161619
-
-
-def chunk(header, size, is_top=False, fd=None, bk=None, digest="00"):
-    return {
-        "header": header,
-        "addr": header + 0x10,
-        "size": size,
-        "raw_size": size | 1,
-        "digest": digest,
-        "is_top": is_top,
-        "fd": fd,
-        "bk": bk,
-    }
-
-
-def bin_(index, count, head=None, entries=None, truncated=False):
-    return {
-        "count": count,
-        "size": tcache_size_for_index(index),
-        "head": head,
-        "entries": list(entries or []),
-        "truncated": truncated,
-    }
-
-
-def build(label, chunks, tcache=None, base=0x555555559000,
-          libc_base=LIBC_BASE, libc_end=LIBC_END):
-    """A snapshot shaped like the one ``capture`` writes.
-
-    Chunk states are deliberately not stored. They are derived when the payload
-    is built, so a snapshot only carries the raw fields.
-    """
-    snap = HeapSnapshot(label=label, base=base, libc_base=libc_base,
-                        libc_end=libc_end)
-    snap.chunks = [dict(c) for c in chunks]
-    snap.tcache = tcache or {}
-    return snap
+from tests.support import (
+    LIBC_BASE,
+    STALE_HEAD,
+    bin_,
+    build,
+    chunk,
+    unsorted_chunk,
+)
 
 
 class TestHexFormatting(unittest.TestCase):
@@ -87,35 +51,6 @@ class TestHexFormatting(unittest.TestCase):
         self.assertEqual(text, "0x4343434616161619")
         self.assertEqual(int(text, 16), STALE_HEAD)
         self.assertNotEqual(int(float(STALE_HEAD)), STALE_HEAD)
-
-
-class TestClassify(unittest.TestCase):
-    def test_top_wins_over_everything(self):
-        c = chunk(0x1000, 0x100, is_top=True, fd=LIBC_BASE + 0x100)
-        self.assertEqual(_classify(c, {c["addr"]}, LIBC_BASE, LIBC_END), "top")
-
-    def test_membership_in_a_chain_is_tcache(self):
-        c = chunk(0x1000, 0x70)
-        self.assertEqual(_classify(c, {c["addr"]}, LIBC_BASE, LIBC_END), "tcache")
-
-    def test_both_pointers_at_the_arena_is_unsorted(self):
-        c = chunk(0x1000, 0x70, fd=LIBC_BASE + 0x1D3CC0, bk=LIBC_BASE + 0x1D3CC0)
-        self.assertEqual(_classify(c, set(), LIBC_BASE, LIBC_END), "unsorted")
-
-    def test_one_pointer_outside_libc_is_not_unsorted(self):
-        # An allocated chunk whose first 16 bytes happen to look like a
-        # freelist. Only a chunk actually sitting in the bin has both.
-        c = chunk(0x1000, 0x70, fd=LIBC_BASE + 0x100, bk=0x4141414141414141)
-        self.assertEqual(_classify(c, set(), LIBC_BASE, LIBC_END), "live")
-
-    def test_without_libc_bounds_nothing_is_called_unsorted(self):
-        # Refusing to guess beats labelling a live chunk as a bin member.
-        c = chunk(0x1000, 0x70, fd=LIBC_BASE + 0x100, bk=LIBC_BASE + 0x100)
-        self.assertEqual(_classify(c, set(), None, None), "live")
-
-    def test_a_plain_chunk_is_live(self):
-        self.assertEqual(
-            _classify(chunk(0x1000, 0x70), set(), LIBC_BASE, LIBC_END), "live")
 
 
 class TestRoundTrip(unittest.TestCase):
@@ -189,8 +124,7 @@ class TestDisplayPayload(unittest.TestCase):
         self.assertEqual(states, ["tcache", "top"])
 
     def test_an_unsorted_chunk_is_recognised(self):
-        snap = build("x", [chunk(0x1000, 0x70, fd=LIBC_BASE + 0x1D3CC0,
-                                 bk=LIBC_BASE + 0x1D3CC0)])
+        snap = build("x", [unsorted_chunk(0x1000, 0x490)])
         states = [c["state"] for c in payload([snap])["snapshots"][0]["chunks"]]
         self.assertEqual(states, ["unsorted"])
 
@@ -199,6 +133,15 @@ class TestDisplayPayload(unittest.TestCase):
                                  bk=0x4141414141414141)])
         states = [c["state"] for c in payload([snap])["snapshots"][0]["chunks"]]
         self.assertEqual(states, ["live"])
+
+    def test_findings_are_carried_in_the_payload(self):
+        # The page renders these rather than deciding for itself what counts as
+        # anomalous, so they have to survive the trip.
+        stale = bin_(5, 0, head=STALE_HEAD)
+        shown = payload([build("x", [], {5: stale})])["snapshots"][0]
+        self.assertTrue(shown["findings"])
+        self.assertEqual(shown["findings"][0]["scope"], "tcache[5]")
+        self.assertIn("empty", shown["findings"][0]["message"])
 
     def test_the_format_stamp_is_in_the_payload(self):
         self.assertEqual(payload([build("a", [])])["format"], FORMAT)

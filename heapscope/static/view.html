@@ -138,14 +138,17 @@ function renderSide(snap) {
     }
   }
 
-  const chips = [];
-  for (const i in snap.tcache) {
-    const b = snap.tcache[i];
-    if (b.truncated) chips.push('<span class="chip" style="background:#FAEEDA;border:0.5px solid #EF9F27;color:#633806">tcache[' + i + "] broken or cyclic</span>");
-    if (b.head && b.entries.length !== b.count) chips.push('<span class="chip" style="background:#FCEBEB;border:0.5px solid #F09595;color:#791F1F">tcache[' + i + "] count " + b.count + " != walk " + b.entries.length + "</span>");
-    if (!b.count && b.head) chips.push('<span class="chip" style="background:#FAEEDA;border:0.5px solid #EF9F27;color:#633806">tcache[' + i + "] empty but head is set</span>");
-  }
-  if (snap.truncated) chips.push('<span class="chip" style="background:#F1EFE8;border:0.5px solid #D3D1C7;color:#444441">walk truncated</span>');
+  // Findings come from heapscope.describe, the same module the terminal UI
+  // uses. Nothing about what counts as anomalous is decided here.
+  const LEVEL = {
+    warn: { bg: "#FAEEDA", edge: "#EF9F27", fg: "#633806" },
+    info: { bg: "#E6F1FB", edge: "#85B7EB", fg: "#0C447C" }
+  };
+  const chips = (snap.findings || []).map(f => {
+    const pal = LEVEL[f.level] || LEVEL.info;
+    return '<span class="chip" style="background:' + pal.bg + ";border:0.5px solid "
+         + pal.edge + ";color:" + pal.fg + '">' + esc(f.scope) + " " + esc(f.message) + "</span>";
+  });
   if (!chips.length) chips.push('<span class="faint">nothing anomalous</span>');
 
   return '<div class="panel"><h2>tcache</h2><div class="tcg">' + tcg + "</div>"

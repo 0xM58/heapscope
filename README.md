@@ -140,8 +140,67 @@ because a heap snapshot exists to be drawn.
 Two details that are easy to get wrong and are handled: chunk states are decided
 in Python rather than in the page, and addresses cross into the browser as hex
 strings. A JavaScript number is a double, so a 64-bit value above 2^53 is
-silently rounded, and a tcache head holding stale chunk data is exactly the kind
-of value that exceeds it.
+silently rounded, and a tcache head holding stale chunk data is exactly the
+kind of value that exceeds it.
+
+### Browsing a heap in a terminal
+
+The browser view answers "what shape is the heap". The terminal view answers
+"what is this chunk and why", which is the question you have more often and the
+one you want to ask where the heap actually lives: inside a container, over
+SSH, on a box where forwarding a port to look at one pointer is a poor trade.
+
+```sh
+heapscope tui stages/            # or, from a checkout: python -m heapscope tui stages/
+```
+
+```
+ heapscope    free(0)   4/8   glibc 2.36   pid 215
+[ chunks ]  bins    diff
+────────────────────────────────────────────────────────────────────────────────
+ 0x555555559290   0x1010   live           │header      0x55555555a2a0
+>0x55555555a2a0   0x70     tcache         │user        0x55555555a2b0
+ 0x55555555a310   0x70     live           │size        0x70  (112 bytes, 96 usable)
+ 0x55555555a380   0x1fc80  top            │size field  0x71
+                                          │flags       P--  (prev_inuse)
+                                          │state       in tcache bin 5
+                                          │fd          0x55555555a
+                                          │bk          0xe50f80be5067375b
+                                          │digest      8b940bced62c
+                                          │
+                                          │what it means
+                                          │Entry 1 of 1 walked in tcache[5]. The bin's
+                                          │count field says 1.
+ j/k move   tab view   n/p snapshot   g/G ends   ? help   q quit
+```
+
+`j`/`k` move, `tab` switches between chunks, tcache bins and a diff against the
+previous snapshot, `n`/`p` change snapshot, `?` explains the keys. The left pane
+is a list; the right pane describes whatever is selected: the raw fields first,
+then a sentence about what they mean.
+
+The reasoning lives in `heapscope/describe.py`, shared with the browser viewer,
+so the two cannot tell you different things. `TuiState` and `render()` are pure,
+which is what makes the layout assertable without a terminal: every line
+`render` returns is exactly as wide as the terminal it was asked for, and that
+is a test rather than a hope. Only `TuiApp` touches curses, and all it does is
+read keys and write lines.
+
+`curses` is in the standard library, so the terminal UI costs no dependencies.
+It refuses to start without a tty rather than drawing an unreadable screen into
+a pipe, and it falls back to ASCII borders when the locale cannot encode box
+characters.
+
+To look at the UI without a terminal, or to check that curses and the renderer
+still agree, there is `tools/tui_capture.py`. It runs the real app in a
+pseudo-terminal and either prints the screens or compares them against
+`render()` at six terminal sizes:
+
+```sh
+pip install pyte
+python tools/tui_capture.py --capture stages/
+python tools/tui_capture.py --verify  stages/
+```
 
 ### Ground-truth leak assertions
 
@@ -254,6 +313,7 @@ heapscope bases  -- ./chall        # resolved pie / libc / heap bases
 heapscope maps   -- ./chall        # /proc/<pid>/maps
 heapscope heap   -- ./chall        # heap at startup
 heapscope view   stages/           # serve heap snapshots on localhost
+heapscope tui    stages/           # browse heap snapshots in the terminal
 ```
 
 ## Example
@@ -438,10 +498,10 @@ A tool that overstates itself wastes your time, so these are stated plainly:
 
 ## Tests
 
-108 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
+228 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
 synthetic heap image, the ELF rejection and layout-arithmetic tests fabricate
-their own inputs, and the viewer tests build their snapshots by hand, so the
-suite needs no privileges, no target and no libc:
+their own inputs, and the viewer, describe and terminal tests build their
+snapshots by hand, so the suite needs no privileges, no target and no libc:
 
 ```sh
 python -m unittest discover -s tests
@@ -455,6 +515,10 @@ HEAPSCOPE_LIBC=/path/to/libc.so.6 python -m unittest discover -s tests
 
 Without it those tests skip, because fabricating a valid ELF64 shared object with
 a `.dynsym` would test the fixture more than the parser.
+
+The suite does not include the terminal check, because that needs a pty and a
+timing budget. Run it separately with `tools/tui_capture.py --verify`; it is the
+only thing that can catch the curses layer and the renderer drifting apart.
 
 ## License
 

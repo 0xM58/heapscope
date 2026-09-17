@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from .asserts import DEFAULT_OFFSETS
+from .describe import classify_chunk, snapshot_findings
 from .heap import HeapDiff, tcache_size_for_index
 
 __all__ = ["HeapSnapshot", "load_snapshots", "make_server", "payload", "serve"]
@@ -59,29 +60,6 @@ def _libc_bounds(probe) -> "tuple[Optional[int], Optional[int]]":
     if not regions:
         return None, None
     return min(r.start for r in regions), max(r.end for r in regions)
-
-
-def _classify(chunk: Dict[str, Any], members: set,
-              libc_base: Optional[int], libc_end: Optional[int]) -> str:
-    """Which state a chunk is in, decided here rather than in the browser.
-
-    Doing this in Python keeps 64-bit arithmetic out of JavaScript, where
-    integers above 2**53 silently lose precision, and keeps the rule in one
-    place instead of two.
-    """
-    if chunk["is_top"]:
-        return "top"
-    if chunk["addr"] in members:
-        return "tcache"
-    fd, bk = chunk["fd"], chunk["bk"]
-    # Both pointers have to land in libc, not just fd. An allocated chunk's
-    # first 16 bytes are user data, and one libc pointer sitting there is
-    # ordinary - a vtable, a FILE *, an arena pointer in a struct. Requiring
-    # both halves of the pair cuts those false positives down.
-    if (libc_base and libc_end and fd and bk
-            and libc_base <= fd < libc_end and libc_base <= bk < libc_end):
-        return "unsorted"
-    return "live"
 
 
 @dataclass
@@ -257,6 +235,9 @@ def _display_snapshot(snap: HeapSnapshot) -> Dict[str, Any]:
     function of the chunk and the tcache chains, so recomputing keeps the rule
     in one place and means a snapshot written before a fix to the rule still
     draws correctly.
+
+    The findings come from :mod:`heapscope.describe`, which the terminal UI also
+    uses, so the two front ends cannot report different problems.
     """
     members = snap.tcache_members()
     return {
@@ -273,10 +254,12 @@ def _display_snapshot(snap: HeapSnapshot) -> Dict[str, Any]:
             "size": _h(c["size"]),
             "digest": c["digest"],
             "is_top": c["is_top"],
-            "state": _classify(c, members, snap.libc_base, snap.libc_end),
+            "state": classify_chunk(snap, c, members),
             "fd": _h(c["fd"]),
             "bk": _h(c["bk"]),
         } for c in snap.chunks],
+        "findings": [{"level": f.level, "scope": f.scope, "message": f.message}
+                     for f in snapshot_findings(snap)],
         "tcache": {str(k): {
             "count": b["count"],
             # Derived from the index rather than read back out of the file. The

@@ -2,12 +2,13 @@
 
 Things you can do from a shell without writing a script: read the offset table
 out of a libc, see what a target actually mapped, look at its heap at startup,
-and browse a set of saved heap snapshots in a browser.
+and browse a set of saved heap snapshots, either in a terminal or a browser.
 
     heapscope offsets ./libc.so.6
     heapscope bases  -- ./chall
     heapscope heap   -- ./chall
     heapscope view   ./stages
+    heapscope tui    ./stages
 """
 
 from __future__ import annotations
@@ -103,21 +104,45 @@ def _cmd_heap(args) -> int:
     return 0
 
 
-def _cmd_view(args) -> int:
-    from .view import load_snapshots, serve
+def _load_snapshots_or_report(args):
+    """Load the snapshots named on the command line, or explain why not.
+
+    Shared by ``view`` and ``tui`` so both fail the same way on a bad path.
+    Returns ``None`` after printing the reason.
+    """
+    from .view import load_snapshots
 
     try:
         snapshots = load_snapshots(args.paths)
     except (OSError, ValueError) as exc:
         print("error: %s" % exc, file=sys.stderr)
-        return 1
+        return None
     if not snapshots:
         print("error: no snapshots found in %s" % ", ".join(args.paths),
               file=sys.stderr)
+        return None
+    return snapshots
+
+
+def _cmd_view(args) -> int:
+    from .view import serve
+
+    snapshots = _load_snapshots_or_report(args)
+    if snapshots is None:
         return 1
 
     serve(snapshots, port=args.port, open_browser=not args.no_browser)
     return 0
+
+
+def _cmd_tui(args) -> int:
+    from .tui import run
+
+    snapshots = _load_snapshots_or_report(args)
+    if snapshots is None:
+        return 1
+
+    return run(snapshots)
 
 
 def _hex(value: Optional[int]) -> str:
@@ -151,6 +176,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_view.add_argument("--no-browser", action="store_true",
                         help="do not try to open a browser")
     p_view.set_defaults(func=_cmd_view)
+
+    p_tui = sub.add_parser("tui", help="browse saved heap snapshots in a terminal")
+    p_tui.add_argument("paths", nargs="+", help="snapshot files or directories")
+    p_tui.set_defaults(func=_cmd_tui)
 
     args = parser.parse_args(argv)
     return args.func(args)
