@@ -43,6 +43,17 @@ _MALLOC_HOOK_TO_ARENA = 0x10
 #: wrong address rather than failing. Do not remove this guard.
 _HOOKS_REMOVED_IN = (2, 34)
 
+#: The first glibc release with safe-linking. From 2.32 on, the ``next``
+#: pointer of a tcache (and fastbin) entry is stored mangled:
+#:
+#:     stored = (address_of_next_field >> 12) ^ next
+#:
+#: so a raw read of the field is not an address at all. It usually lands
+#: outside the heap, which is why an undemangled walk produces one bogus
+#: entry and then stops. Only the singly-linked lists are mangled; the
+#: unsorted bin's ``fd``/``bk`` are ordinary pointers.
+_SAFE_LINKING_FROM = (2, 32)
+
 #: ``bin_at(av, 1)`` - the value a chunk gets in ``fd``/``bk`` when it lands in
 #: the unsorted bin - is ``&bins[0] - offsetof(malloc_chunk, fd)``, i.e. the
 #: bins array minus 0x10. So the observable pointer is ``main_arena + 0x60``
@@ -184,6 +195,19 @@ def derive_main_arena(version: Optional[str],
     return None
 
 
+def derive_safe_linked(version: Optional[str]) -> bool:
+    """Whether tcache ``next`` pointers are mangled for this version.
+
+    Defaults to ``False`` for an unknown version, matching how
+    ``tcache_counts_size`` defaults to the older layout. An unknown version
+    therefore gets the pre-2.32 walk, which is the conservative choice: it
+    reads the field verbatim and, thanks to the heap-bounds check in the
+    walker, stops rather than inventing entries.
+    """
+    vt = _version_tuple(version)
+    return vt is not None and vt >= _SAFE_LINKING_FROM
+
+
 def detect_version(path: str) -> Optional[str]:
     """Best-effort glibc version, e.g. ``"2.29"``."""
     with open(path, "rb") as fh:
@@ -225,6 +249,11 @@ class GlibcLayout:
     #: 2 for 2.30+. Changes where ``entries[]`` begins.
     tcache_counts_size: int = 1
 
+    #: True when tcache ``next`` pointers are mangled, i.e. glibc 2.32 and
+    #: later. See ``_SAFE_LINKING_FROM``. Get this wrong and the chain walk
+    #: silently reports one bogus entry instead of the real chain.
+    safe_linked: bool = False
+
     # ---- constructors ----------------------------------------------------
     @classmethod
     def from_libc(cls, path: str) -> "GlibcLayout":
@@ -249,6 +278,7 @@ class GlibcLayout:
 
         if vt is not None:
             layout.tcache_counts_size = 1 if vt < (2, 30) else 2
+        layout.safe_linked = derive_safe_linked(version)
 
         layout.extra = {k: v for k, v in syms.items() if k not in _WANTED}
         return layout
@@ -257,6 +287,8 @@ class GlibcLayout:
     def register(cls, version: str, **offsets) -> "GlibcLayout":
         """Build a layout by hand, for glibc versions that need it (>= 2.34)."""
         layout = cls(version=version, source="manual")
+        layout.tcache_counts_size = 2
+        layout.safe_linked = derive_safe_linked(version)
         for key, value in offsets.items():
             if not hasattr(layout, key):
                 raise TypeError("unknown layout field %r" % key)

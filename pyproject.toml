@@ -27,3 +27,6 @@ Homepage = "https://github.com/"
 
 [tool.setuptools.packages.find]
 include = ["heapscope*"]
+
+[tool.setuptools.package-data]
+heapscope = ["static/*.html"]

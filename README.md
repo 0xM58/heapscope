@@ -71,6 +71,19 @@ h.allocated()       # chunks neither top nor sitting in tcache
 count; 2.30+ widened them to `uint16_t`, which shifts `entries[]` and the first
 user chunk by 64 bytes. Both layouts are handled and tested.
 
+Freelist pointers are version-aware too. From glibc 2.32 the `next` field of a
+tcache entry is stored mangled, as `(address_of_next_field >> 12) ^ next`, so a
+raw read of that field is not an address at all. A walker that skips the
+demangling does not crash and does not hang; it reports one bogus entry and then
+stops, which reads like a corrupted heap and is not one.
+
+The demangling also has to happen *before* the end-of-chain test. The last chunk
+in a safe-linked chain stores `pos >> 12`, not `0`, because that is
+`(pos >> 12) ^ 0`, so a walker that tests the stored value for zero walks
+straight past the end of the chain. `derive_safe_linked()` is pinned by tests at
+the 2.32 boundary, and a link that leaves the heap ends the walk rather than
+being reported as a chunk.
+
 ### Heap diffing
 
 Capture before, capture after, and see what an operation actually changed:
@@ -91,6 +104,44 @@ tcache[6] count 0->255 head None->0x7fffff7cc7e3
 That `tcache[5] head = 0x7171717171717171` is `'q' * 8`, a freelist pointer that
 has been overwritten with attacker-controlled filler. You can see it right there
 instead of inferring it from a crash three steps later.
+
+### Viewing a heap
+
+A diff tells you something moved. It does not tell you what the heap looks like
+now, so you end up rebuilding the layout in your head from four addresses. Dump a
+snapshot at each stage and scrub through them instead:
+
+```python
+from heapscope import HeapSnapshot
+
+with Probe(["./chall"], libc="./libc.so.6") as p:
+    p.recvuntil(b"Choice? ")
+    HeapSnapshot.capture(p, label="start").save("stages/01.json")
+
+    free(0)
+    HeapSnapshot.capture(p, label="after free(0)").save("stages/02.json")
+```
+
+```sh
+heapscope view stages/
+```
+
+That serves the directory on localhost: a proportional map of the heap, the
+tcache bins, the unsorted bin, and a diff against the previous snapshot. A chunk
+that has just landed in a bin is drawn red, and anything anomalous gets a chip: a
+chain longer than its own count, a chain that cycles, a bin whose head is set
+while its count is zero.
+
+The library stays headless. Nothing here reads or writes a process, the server
+binds to `127.0.0.1` only, there is no write path, and it works after the target
+has crashed. Absolute addresses *are* recorded here, unlike in a layout snapshot,
+because a heap snapshot exists to be drawn.
+
+Two details that are easy to get wrong and are handled: chunk states are decided
+in Python rather than in the page, and addresses cross into the browser as hex
+strings. A JavaScript number is a double, so a 64-bit value above 2^53 is
+silently rounded, and a tcache head holding stale chunk data is exactly the kind
+of value that exceeds it.
 
 ### Ground-truth leak assertions
 
@@ -202,6 +253,7 @@ heapscope offsets ./libc.so.6      # symbol offsets, read from the ELF
 heapscope bases  -- ./chall        # resolved pie / libc / heap bases
 heapscope maps   -- ./chall        # /proc/<pid>/maps
 heapscope heap   -- ./chall        # heap at startup
+heapscope view   stages/           # serve heap snapshots on localhost
 ```
 
 ## Example
@@ -244,11 +296,21 @@ second free goes through. The heap view shows the result, a freelist that now
 points into itself:
 
 ```
-tcache[5] size=0x70 count=2 head=0x55555555a2b0 chain=[0x55555555a2b0, ...] (truncated)
+tcache[5] size=0x70 count=2 head=0x55555555a2b0 chain=[0x55555555a2b0] (truncated)
 ```
 
-It says `truncated` rather than hanging. A cycle is a normal state for an
-exploited heap, so the walker detects it instead of looping forever.
+One entry in the chain and a count of two is the signature of the cycle: the
+chunk's `next` points back at itself. It says `truncated` rather than hanging,
+because a cycle is a normal state for an exploited heap and the walker detects it
+instead of looping forever.
+
+Pass `--snapshots DIR` and the demo replays that whole sequence once more,
+writing a heap snapshot at each of eight steps for the viewer:
+
+```sh
+python3 examples/demo.py --snapshots stages/
+heapscope view stages/
+```
 
 **Proving a leak.** Free a chunk into the unsorted bin and read the `fd` it
 received. That value is `bin_at(av, 1)`, so subtracting the offset recovers the
@@ -305,6 +367,11 @@ The two tcache layouts differ because 2.30 widened `counts[]` from one byte per
 bin to `uint16_t`, which shifts `entries[]` and the first user chunk by 64 bytes.
 The rule is `0x10 + 64 * counts_size + 512`, and both widths are asserted in the
 test suite (`tests/test_heap.py`).
+
+The safe-linking boundary was checked against both libcs the same way. Read out
+of the files, `2.29` reports `safe_linked=False` and `2.36` reports `True`, so
+the demangling is switched on by the version actually detected rather than
+assumed. With the 2.29 libc supplied, the suite is green with no skips at all.
 
 Look at the two `__malloc_hook` rows together. On 2.29 it is `0x1e4c30`, exactly
 `0x10` below `main_arena`. On 2.36 it is the same symbol, and it is nowhere near.
@@ -366,9 +433,10 @@ A tool that overstates itself wastes your time, so these are stated plainly:
 
 ## Tests
 
-62 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
-synthetic heap image, and the ELF rejection and layout-arithmetic tests fabricate
-their own inputs, so the suite needs no privileges, no target and no libc:
+108 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
+synthetic heap image, the ELF rejection and layout-arithmetic tests fabricate
+their own inputs, and the viewer tests build their snapshots by hand, so the
+suite needs no privileges, no target and no libc:
 
 ```sh
 python -m unittest discover -s tests

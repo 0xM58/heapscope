@@ -79,6 +79,55 @@ def build_image(counts_size=1, tcache_index=6, tcache_count=1):
     return bytes(img)
 
 
+def _link(pos, target, safe_linked):
+    """How glibc stores a ``next`` pointer at address *pos*.
+
+    Note the terminator. On a safe-linked heap the last chunk in a chain does
+    not store ``0``, it stores ``pos >> 12``, because that is ``(pos >> 12) ^ 0``.
+    A walker therefore has to demangle *before* testing for the end of the
+    chain: testing the raw value for zero would miss the terminator, and
+    demangling a literal zero would invent a non-zero pointer.
+    """
+    return ((pos >> 12) ^ target) if safe_linked else target
+
+
+def build_chain_image(counts_size=1, safe_linked=False, index=5, loop=False):
+    """Two chunks in one tcache bin, so the walk has to follow a link.
+
+    ``build_image`` only ever puts one chunk in the bin, which means the chain
+    walk exits on its length check before it ever dereferences a ``next``
+    pointer. That is exactly the blind spot that let a safe-linking bug through:
+    on glibc 2.32+ the stored ``next`` is mangled, and a single-entry bin never
+    reads it.
+
+    With *loop*, the chunk points at itself, which is what a defeated
+    double-free check leaves behind.
+    """
+    first = first_chunk_offset(counts_size)
+    img = bytearray(IMAGE_SIZE)
+    struct.pack_into("<Q", img, 0x08, first | 1)
+
+    a_hdr, b_hdr = first, first + 0x80
+    a_user, b_user = a_hdr + 0x10, b_hdr + 0x10
+
+    counts_off = 0x10
+    entries_off = tcache_entries_offset(counts_size)
+    fmt = "<B" if counts_size == 1 else "<H"
+    struct.pack_into(fmt, img, counts_off + index * counts_size, 2)
+    struct.pack_into("<Q", img, entries_off + index * 8, BASE + a_user)
+
+    target = BASE + (a_user if loop else b_user)
+    struct.pack_into("<Q", img, a_hdr + 0x10, _link(BASE + a_user, target, safe_linked))
+
+    # The second chunk terminates the chain.
+    struct.pack_into("<Q", img, b_hdr + 0x10, _link(BASE + b_user, 0, safe_linked))
+
+    struct.pack_into("<Q", img, a_hdr + 8, 0x80 | 1)
+    struct.pack_into("<Q", img, b_hdr + 8, 0x80 | 1)
+    struct.pack_into("<Q", img, b_hdr + 0x80 + 8, (IMAGE_SIZE - (b_hdr + 0x80)) | 1)
+    return bytes(img)
+
+
 class TestTcacheMath(unittest.TestCase):
     def test_index_for_size(self):
         self.assertEqual(tcache_index_for_size(0x20), 0)
@@ -100,6 +149,66 @@ class TestTcacheMath(unittest.TestCase):
         # 2.30+ widened counts[] to 16 bits, shifting both by 64 bytes.
         self.assertEqual(tcache_entries_offset(2), 0x90)
         self.assertEqual(first_chunk_offset(2), 0x290)
+
+
+class TestSafeLinking(unittest.TestCase):
+    """glibc 2.32+ mangles tcache ``next`` pointers.
+
+    Reading the field verbatim on those versions does not fail loudly. It
+    returns a number that looks like an address, and the walker used to report
+    it as a chunk in the chain. These tests exist because the rest of the suite
+    cannot see the bug: every other fixture puts one chunk in the bin, so the
+    walk never dereferences a link.
+    """
+
+    def decode(self, image, counts_size=1, safe_linked=False):
+        layout = GlibcLayout(version="2.36" if safe_linked else "2.29",
+                             tcache_counts_size=counts_size,
+                             safe_linked=safe_linked)
+        return HeapView.capture(FakeReader(image), BASE, layout, region_end=REGION_END)
+
+    def test_plain_chain_walks_to_the_end(self):
+        bin_ = self.decode(build_chain_image(1, safe_linked=False)).tcache[5]
+        self.assertEqual(bin_.count, 2)
+        self.assertEqual(len(bin_.entries), 2)
+        self.assertFalse(bin_.truncated)
+
+    def test_safe_linked_chain_walks_to_the_end(self):
+        bin_ = self.decode(build_chain_image(1, safe_linked=True), safe_linked=True).tcache[5]
+        self.assertEqual(bin_.count, 2)
+        self.assertEqual(len(bin_.entries), 2)
+        self.assertFalse(bin_.truncated)
+
+    def test_safe_linked_chain_also_works_with_wide_counts(self):
+        bin_ = self.decode(build_chain_image(2, safe_linked=True), counts_size=2,
+                           safe_linked=True).tcache[5]
+        self.assertEqual(len(bin_.entries), 2)
+        self.assertFalse(bin_.truncated)
+
+    def test_mangled_pointer_is_never_reported_as_a_chunk(self):
+        # The regression: demangling disabled on a safe-linked heap must not
+        # invent an entry. It should stop and say the walk was truncated.
+        bin_ = self.decode(build_chain_image(1, safe_linked=True), safe_linked=False).tcache[5]
+        self.assertLessEqual(len(bin_.entries), 1)
+        self.assertTrue(bin_.truncated)
+
+    def test_self_loop_reports_one_entry_and_truncated(self):
+        first = first_chunk_offset(1)
+        bin_ = self.decode(build_chain_image(1, safe_linked=True, loop=True),
+                           safe_linked=True).tcache[5]
+        self.assertEqual(bin_.entries, [BASE + first + 0x10])
+        self.assertEqual(bin_.count, 2)
+        self.assertTrue(bin_.truncated)
+
+    def test_link_outside_the_heap_ends_the_walk(self):
+        # A chunk whose next pointer points at something unmapped-looking must
+        # not be appended to the chain.
+        img = bytearray(build_chain_image(1, safe_linked=False))
+        first = first_chunk_offset(1)
+        struct.pack_into("<Q", img, first + 0x10, 0xDEADBEEF)
+        bin_ = self.decode(bytes(img)).tcache[5]
+        self.assertEqual(len(bin_.entries), 1)
+        self.assertTrue(bin_.truncated)
 
 
 class TestHeapView(unittest.TestCase):

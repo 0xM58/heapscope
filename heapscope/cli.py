@@ -1,12 +1,13 @@
 """Command line interface.
 
 Things you can do from a shell without writing a script: read the offset table
-out of a libc, see what a target actually mapped, and look at its heap at
-startup.
+out of a libc, see what a target actually mapped, look at its heap at startup,
+and browse a set of saved heap snapshots in a browser.
 
     heapscope offsets ./libc.so.6
     heapscope bases  -- ./chall
     heapscope heap   -- ./chall
+    heapscope view   ./stages
 """
 
 from __future__ import annotations
@@ -102,6 +103,23 @@ def _cmd_heap(args) -> int:
     return 0
 
 
+def _cmd_view(args) -> int:
+    from .view import load_snapshots, serve
+
+    try:
+        snapshots = load_snapshots(args.paths)
+    except (OSError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    if not snapshots:
+        print("error: no snapshots found in %s" % ", ".join(args.paths),
+              file=sys.stderr)
+        return 1
+
+    serve(snapshots, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def _hex(value: Optional[int]) -> str:
     return "n/a" if value is None else "%#x" % value
 
@@ -125,6 +143,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         sp = sub.add_parser(name, help=help_text)
         _add_target_args(sp)
         sp.set_defaults(func=func)
+
+    p_view = sub.add_parser("view", help="browse saved heap snapshots in a browser")
+    p_view.add_argument("paths", nargs="+", help="snapshot files or directories")
+    p_view.add_argument("--port", type=int, default=0,
+                        help="port to listen on (default: any free port)")
+    p_view.add_argument("--no-browser", action="store_true",
+                        help="do not try to open a browser")
+    p_view.set_defaults(func=_cmd_view)
 
     args = parser.parse_args(argv)
     return args.func(args)

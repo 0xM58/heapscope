@@ -47,6 +47,7 @@ from .heap import (
 )
 from .memory import MapRegion, MemReader, MemoryMap
 from .probe import Diagnosis, Probe
+from .view import HeapSnapshot
 
 __version__ = "0.1.0"
 
@@ -74,6 +75,8 @@ __all__ = [
     # assertions
     "LayoutSnapshot",
     "assert_layout",
+    # viewer
+    "HeapSnapshot",
     # errors
     "HeapscopeError",
     "ProcessDied",

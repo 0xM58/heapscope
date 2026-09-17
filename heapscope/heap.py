@@ -236,21 +236,30 @@ class HeapView:
                 sample: int = DEFAULT_SAMPLE) -> "HeapView":
         """Read and decode the heap of the process behind *reader*."""
         counts_size = layout.tcache_counts_size if layout else 1
+        safe_linked = layout.safe_linked if layout else False
+        limit = region_end or (base + 0x1000_0000)
 
-        tcache = cls._decode_tcache(reader, base, counts_size)
+        tcache = cls._decode_tcache(reader, base, counts_size, safe_linked, limit)
         chunks, truncated = cls._walk_chunks(
             reader, base + first_chunk_offset(counts_size),
-            region_end or (base + 0x1000_0000), max_chunks, sample,
+            limit, max_chunks, sample,
         )
         return cls(base, chunks, tcache, layout, region_end, truncated)
 
     @staticmethod
-    def _decode_tcache(reader: MemReader, base: int, counts_size: int) -> Dict[int, TcacheBin]:
+    def _decode_tcache(reader: MemReader, base: int, counts_size: int,
+                       safe_linked: bool = False,
+                       limit: Optional[int] = None) -> Dict[int, TcacheBin]:
         """Decode ``tcache_perthread_struct``.
 
         The count field is authoritative: the chain is walked at most
         ``count`` links, so a poisoned ``fd`` pointing somewhere absurd cannot
         spin forever. A cycle is reported via ``truncated`` instead.
+
+        On glibc 2.32 and later the ``next`` field is safe-linked, so it is
+        demangled before use. A link that leaves the heap also ends the walk:
+        without that check a mangled pointer gets reported as a chunk, which
+        looks like a real entry and is not one.
         """
         counts_off = tcache_counts_offset()
         entries_off = tcache_entries_offset(counts_size)
@@ -278,11 +287,26 @@ class HeapView:
                     break
                 seen.add(cur)
                 entries.append(cur)
-                nxt = reader.try_u64(cur)
-                if nxt is None:
+
+                raw = reader.try_u64(cur)
+                if raw is None:
                     truncated = True
                     break
-                cur = nxt
+                if safe_linked:
+                    # stored = (address_of_next_field >> 12) ^ next
+                    raw = (cur >> 12) ^ raw
+                # Demangling must happen before this test, not after. The last
+                # chunk in a safe-linked chain stores (pos >> 12) ^ 0, which is
+                # not zero on disk, so testing the raw value for zero would walk
+                # straight past the end of the chain.
+                if not raw:
+                    break
+                if limit is not None and not (base <= raw < limit):
+                    # A link out of the heap is not a chunk. Stop rather than
+                    # report it as one.
+                    truncated = True
+                    break
+                cur = raw
 
             bins[idx] = TcacheBin(index=idx, count=count, head=head or None,
                                   entries=entries, truncated=truncated)

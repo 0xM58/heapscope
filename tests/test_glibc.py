@@ -17,6 +17,7 @@ from heapscope.errors import LayoutUnknown
 from heapscope.glibc import (
     GlibcLayout,
     derive_main_arena,
+    derive_safe_linked,
     detect_version,
     elf_symbols,
 )
@@ -103,6 +104,43 @@ class TestMainArenaDerivation(unittest.TestCase):
         self.assertIsNone(derive_main_arena(None, 0x1E4C30))
         self.assertIsNone(derive_main_arena("3.0", 0x1234))
         self.assertIsNone(derive_main_arena("2.29", None))
+
+
+class TestSafeLinkingVersion(unittest.TestCase):
+    """The 2.32 boundary, which is where the chain walk changes meaning.
+
+    Getting this wrong is not a crash. On a 2.32+ target it makes the walker
+    read a mangled ``next`` field as an address and report a chunk that does
+    not exist, which is why the boundary is pinned here rather than left to
+    the libc fixtures.
+    """
+
+    def test_2_31_and_earlier_store_next_verbatim(self):
+        for version in ("2.23", "2.27", "2.29", "2.31"):
+            self.assertFalse(derive_safe_linked(version), version)
+
+    def test_2_32_and_later_are_safe_linked(self):
+        for version in ("2.32", "2.33", "2.34", "2.35", "2.36", "2.39"):
+            self.assertTrue(derive_safe_linked(version), version)
+
+    def test_unknown_version_is_not_assumed_safe_linked(self):
+        # The conservative direction: reading an unmangled field cannot invent
+        # an entry, and the bounds check in the walker stops a wrong guess.
+        for version in (None, "", "garbage"):
+            self.assertFalse(derive_safe_linked(version), repr(version))
+
+    def test_a_future_version_keeps_safe_linking(self):
+        # This is a monotonic rule, not a table lookup. Unlike main_arena,
+        # which refuses to guess for a version it has no offset for, a later
+        # glibc is expected to still mangle its freelist pointers: dropping
+        # safe-linking would be a security regression, not a refactor.
+        self.assertTrue(derive_safe_linked("3.0"))
+
+    def test_layout_carries_the_flag(self):
+        # The dataclass default stays False; only the constructors derive it.
+        self.assertFalse(GlibcLayout(version="2.36").safe_linked)
+        self.assertTrue(GlibcLayout.register("2.36").safe_linked)
+        self.assertFalse(GlibcLayout.register("2.29").safe_linked)
 
 
 class TestLayoutArithmetic(unittest.TestCase):
