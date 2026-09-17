@@ -2,7 +2,7 @@
 
 Without this, looking at a heap from a fresh checkout means either installing
 the package first or remembering to type ``python -m heapscope.cli``. Neither is
-something you should have to know just to open the viewer.
+something you should have to know just to browse a snapshot.
 """
 
 import sys

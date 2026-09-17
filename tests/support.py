@@ -1,8 +1,8 @@
 """Shared fixtures for the snapshot tests.
 
-The viewer, the describe layer and the terminal UI all work on the same
-:class:`~heapscope.view.HeapSnapshot` shape, so they all want the same builders.
-Keeping them here means a change to that shape is fixed in one place.
+The describe layer, the terminal UI and the snapshot format all work on the
+same :class:`~heapscope.snapshot.HeapSnapshot` shape, so they all want the same
+builders. Keeping them here means a change to that shape is fixed in one place.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from heapscope.heap import tcache_size_for_index
-from heapscope.view import HeapSnapshot
+from heapscope.snapshot import HeapSnapshot
 
 LIBC_BASE = 0x7FFFF7C00000
 LIBC_END = LIBC_BASE + 0x200000

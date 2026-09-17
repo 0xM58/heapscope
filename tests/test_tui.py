@@ -718,7 +718,7 @@ class TestRun(unittest.TestCase):
             self.assertEqual(run([]), 1)
         self.assertIn("no snapshots", stderr.getvalue())
 
-    def test_without_a_tty_it_points_at_the_browser_viewer(self):
+    def test_without_a_tty_it_says_so(self):
         # Redirected output is the common case in CI and in a pipe, and a
         # curses wrapper there produces an unreadable screen rather than an
         # error. StringIO is not a tty, which is exactly the situation.
@@ -730,7 +730,7 @@ class TestRun(unittest.TestCase):
             self.assertEqual(run([one_snapshot()]), 1)
         message = stderr.getvalue()
         self.assertIn("needs a tty", message)
-        self.assertIn("heapscope view", message)
+        self.assertIn("redirected", message)
 
 
 if __name__ == "__main__":

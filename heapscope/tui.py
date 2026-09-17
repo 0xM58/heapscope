@@ -1,9 +1,9 @@
 """A terminal inspector for heap snapshots.
 
-The browser viewer answers "what shape is the heap". This answers "what is this
-chunk and why", which is a different job and the one you want more often: you
-are in a container or over SSH, there is no browser, and forwarding a port to
-look at one pointer is a poor trade.
+A snapshot is a heap frozen at one moment. The interesting question about one
+is "what is this chunk and why", and the place you want to ask it is wherever
+the heap actually lives: in a container, over SSH, on a box with no browser to
+speak of and no reason to forward a port to look at one pointer.
 
 The layout follows the k9s and lazygit convention. A list you move through on
 the left, a pane on the right that describes whatever is selected, and a footer
@@ -33,7 +33,7 @@ from .describe import (
     snapshot_findings,
     snapshot_states,
 )
-from .view import HeapSnapshot
+from .snapshot import HeapSnapshot
 
 __all__ = ["TuiState", "render", "run", "ASCII_CHARS", "UTF8_CHARS"]
 
@@ -599,8 +599,11 @@ def run(snapshots: Sequence[HeapSnapshot]) -> int:
         print("error: no snapshots to show", file=sys.stderr)
         return 1
     if not sys.stdout.isatty():
-        print("error: the terminal UI needs a tty. Use `heapscope view` for a "
-              "browser, or run this from a terminal.", file=sys.stderr)
+        # Redirected output is the common case in CI and in a pipe, and a
+        # curses wrapper there produces an unreadable screen rather than an
+        # error. Saying so is more use than trying anyway.
+        print("error: the terminal UI needs a tty, so it cannot run with its "
+              "output redirected. Run it from a terminal.", file=sys.stderr)
         return 1
 
     locale.setlocale(locale.LC_ALL, "")

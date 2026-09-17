@@ -105,11 +105,11 @@ That `tcache[5] head = 0x7171717171717171` is `'q' * 8`, a freelist pointer that
 has been overwritten with attacker-controlled filler. You can see it right there
 instead of inferring it from a crash three steps later.
 
-### Viewing a heap
+### Reading a heap
 
 A diff tells you something moved. It does not tell you what the heap looks like
 now, so you end up rebuilding the layout in your head from four addresses. Dump a
-snapshot at each stage and scrub through them instead:
+snapshot at each stage and step through them instead:
 
 ```python
 from heapscope import HeapSnapshot
@@ -121,34 +121,6 @@ with Probe(["./chall"], libc="./libc.so.6") as p:
     free(0)
     HeapSnapshot.capture(p, label="after free(0)").save("stages/02.json")
 ```
-
-```sh
-heapscope view stages/            # or, from a checkout: python -m heapscope view stages/
-```
-
-That serves the directory on localhost: a proportional map of the heap, the
-tcache bins, the unsorted bin, and a diff against the previous snapshot. A chunk
-that has just landed in a bin is drawn red, and anything anomalous gets a chip: a
-chain longer than its own count, a chain that cycles, a bin whose head is set
-while its count is zero.
-
-The library stays headless. Nothing here reads or writes a process, the server
-binds to `127.0.0.1` only, there is no write path, and it works after the target
-has crashed. Absolute addresses *are* recorded here, unlike in a layout snapshot,
-because a heap snapshot exists to be drawn.
-
-Two details that are easy to get wrong and are handled: chunk states are decided
-in Python rather than in the page, and addresses cross into the browser as hex
-strings. A JavaScript number is a double, so a 64-bit value above 2^53 is
-silently rounded, and a tcache head holding stale chunk data is exactly the
-kind of value that exceeds it.
-
-### Browsing a heap in a terminal
-
-The browser view answers "what shape is the heap". The terminal view answers
-"what is this chunk and why", which is the question you have more often and the
-one you want to ask where the heap actually lives: inside a container, over
-SSH, on a box where forwarding a port to look at one pointer is a poor trade.
 
 ```sh
 heapscope tui stages/            # or, from a checkout: python -m heapscope tui stages/
@@ -179,12 +151,21 @@ previous snapshot, `n`/`p` change snapshot, `?` explains the keys. The left pane
 is a list; the right pane describes whatever is selected: the raw fields first,
 then a sentence about what they mean.
 
-The reasoning lives in `heapscope/describe.py`, shared with the browser viewer,
-so the two cannot tell you different things. `TuiState` and `render()` are pure,
-which is what makes the layout assertable without a terminal: every line
-`render` returns is exactly as wide as the terminal it was asked for, and that
-is a test rather than a hope. Only `TuiApp` touches curses, and all it does is
-read keys and write lines.
+A chunk that has just landed in a bin is labelled `tcache`, and anything
+anomalous is named at the top of the pane: a chain longer than its own count, a
+chain that cycles, a bin whose head is set while its count is zero.
+
+The library stays headless. Nothing here reads or writes a process, and reading
+a snapshot back never touches a target, so this still works after the target has
+crashed. Absolute addresses *are* recorded, unlike in a layout snapshot, because
+a heap snapshot exists to be read.
+
+The reasoning lives in `heapscope/describe.py`, apart from both the curses layer
+and the file format, so what counts as anomalous is decided in one place.
+`TuiState` and `render()` are pure, which is what makes the layout assertable
+without a terminal: every line `render` returns is exactly as wide as the
+terminal it was asked for, and that is a test rather than a hope. Only `TuiApp`
+touches curses, and all it does is read keys and write lines.
 
 `curses` is in the standard library, so the terminal UI costs no dependencies.
 It refuses to start without a tty rather than drawing an unreadable screen into
@@ -312,7 +293,6 @@ heapscope offsets ./libc.so.6      # symbol offsets, read from the ELF
 heapscope bases  -- ./chall        # resolved pie / libc / heap bases
 heapscope maps   -- ./chall        # /proc/<pid>/maps
 heapscope heap   -- ./chall        # heap at startup
-heapscope view   stages/           # serve heap snapshots on localhost
 heapscope tui    stages/           # browse heap snapshots in the terminal
 ```
 
@@ -370,11 +350,11 @@ because a cycle is a normal state for an exploited heap and the walker detects i
 instead of looping forever.
 
 Pass `--snapshots DIR` and the demo replays that whole sequence once more,
-writing a heap snapshot at each of eight steps for the viewer:
+writing a heap snapshot at each of eight steps for the inspector:
 
 ```sh
 python3 examples/demo.py --snapshots stages/
-heapscope view stages/
+heapscope tui stages/
 ```
 
 **Proving a leak.** Free a chunk into the unsorted bin and read the `fd` it
@@ -498,9 +478,9 @@ A tool that overstates itself wastes your time, so these are stated plainly:
 
 ## Tests
 
-228 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
+206 tests, green against both glibc 2.29 and 2.36. The heap tests run against a
 synthetic heap image, the ELF rejection and layout-arithmetic tests fabricate
-their own inputs, and the viewer, describe and terminal tests build their
+their own inputs, and the snapshot, describe and terminal tests build their
 snapshots by hand, so the suite needs no privileges, no target and no libc:
 
 ```sh

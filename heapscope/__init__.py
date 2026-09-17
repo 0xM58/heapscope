@@ -48,7 +48,7 @@ from .heap import (
 from .memory import MapRegion, MemReader, MemoryMap
 from .probe import Diagnosis, Probe
 from .describe import Finding, classify_chunk, snapshot_findings
-from .view import HeapSnapshot
+from .snapshot import HeapSnapshot
 
 __version__ = "0.1.0"
 

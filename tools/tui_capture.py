@@ -220,7 +220,7 @@ def app_argv(paths):
 def expected_frame(keys, paths, columns, lines):
     """What ``render`` says the screen should be after *keys*."""
     from heapscope.tui import TuiApp, TuiState, UTF8_CHARS, render
-    from heapscope.view import load_snapshots
+    from heapscope.snapshot import load_snapshots
 
     app = TuiApp(TuiState(load_snapshots(paths)))
     for key in keys:

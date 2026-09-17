@@ -1,12 +1,14 @@
 """Turn a heap snapshot into facts a person can read.
 
-Both front ends use this module: the terminal UI and the browser viewer. Keeping
-the reasoning here rather than in either presentation layer means the two cannot
-disagree about what a snapshot says, and it keeps 64-bit pointer arithmetic out
-of JavaScript, where a value above 2**53 is silently rounded.
+This is the layer between a snapshot and whoever is showing it. It holds the
+reasoning: which state a chunk is in, which anomalies are worth pointing out,
+and the sentences explaining what the numbers mean. Keeping it out of the
+curses code means what counts as anomalous is decided in one place, and it
+keeps 64-bit pointer arithmetic out of the presentation layer.
 
-Nothing here reads a process. It works on a :class:`~heapscope.view.HeapSnapshot`,
-which is plain data, so all of it is testable without a target.
+Nothing here reads a process. It works on a
+:class:`~heapscope.snapshot.HeapSnapshot`, which is plain data, so all of it is
+testable without a target.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from .heap import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import for annotations only
-    from .view import HeapSnapshot
+    from .snapshot import HeapSnapshot
 
 __all__ = [
     "Finding",
@@ -176,8 +178,8 @@ class Finding:
 def snapshot_findings(snap: "HeapSnapshot") -> List[Finding]:
     """Everything anomalous about a snapshot.
 
-    The single source of truth for the warnings both front ends show, so the
-    terminal and the browser cannot tell you different things.
+    The single source of truth for the warnings shown about a snapshot, so the
+    header count, the per-item list and the detail pane cannot disagree.
     """
     out: List[Finding] = []
 

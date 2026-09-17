@@ -23,11 +23,11 @@ Stages:
   5. layout snapshots - catching environment drift before it bites
 
 Pass --snapshots DIR to add a sixth pass that replays the whole double-free
-sequence and saves a heap snapshot at every step, which is what the browser
-viewer draws:
+sequence and saves a heap snapshot at every step, which is what the terminal
+inspector browses:
 
     python3 examples/demo.py --snapshots stages/
-    heapscope view stages/
+    heapscope tui stages/
 """
 
 from __future__ import annotations
@@ -257,11 +257,11 @@ def stage_5_snapshot() -> None:
 def stage_6_timeline(directory: str) -> None:
     """Replay the double-free sequence, saving a snapshot at every step.
 
-    This is the input for `heapscope view`. Watching the tcache bin go from 0
-    to 1 to 2 and then hand the same chunk out twice is a lot clearer as a
-    picture than as three lines of diff text.
+    This is the input for `heapscope tui`. Watching the tcache bin go from 0
+    to 1 to 2 and then hand the same chunk out twice is a lot clearer when you
+    can step through it than as three lines of diff text.
     """
-    banner("6. snapshot timeline - for the viewer")
+    banner("6. snapshot timeline - for the inspector")
     os.makedirs(directory, exist_ok=True)
     written = []
 
@@ -298,13 +298,13 @@ def stage_6_timeline(directory: str) -> None:
         record("alloc(1), the same chunk again")
 
     print("\n%d snapshots written to %s" % (len(written), directory))
-    print("view them with:  heapscope view %s" % directory)
+    print("browse them with:  heapscope tui %s" % directory)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="A tour of heapscope.")
     parser.add_argument("--snapshots", metavar="DIR",
-                        help="also write a snapshot timeline to DIR, for `heapscope view`")
+                        help="also write a snapshot timeline to DIR, for `heapscope tui`")
     args = parser.parse_args(argv)
 
     if not os.path.exists(TARGET):

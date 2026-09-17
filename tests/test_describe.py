@@ -1,8 +1,8 @@
 """Tests for the describe layer.
 
-This is where the reasoning about a snapshot lives, shared by the terminal UI
-and the browser viewer, so it is also where the interesting assertions belong.
-Everything here is pure: snapshots in, strings out, no terminal and no browser.
+This is where the reasoning about a snapshot lives, so it is also where the
+interesting assertions belong. Everything here is pure: snapshots in, strings
+out, no terminal involved.
 """
 
 import unittest
