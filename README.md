@@ -123,7 +123,7 @@ with Probe(["./chall"], libc="./libc.so.6") as p:
 ```
 
 ```sh
-heapscope view stages/
+heapscope view stages/            # or, from a checkout: python -m heapscope view stages/
 ```
 
 That serves the directory on localhost: a proportional map of the heap, the
