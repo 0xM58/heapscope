@@ -266,6 +266,11 @@ cd examples/dummy && make     # a 120-line deliberately-vulnerable target
 cd ../.. && python3 examples/demo.py
 ```
 
+The target is a Linux ELF, because everything heapscope does rests on `/proc`.
+On macOS `make` refuses rather than quietly producing a Mach-O binary that the
+demo could never use; build it in a Linux container instead. `make` is only a
+convenience for the single file, so `gcc -O0 -g -o dummy dummy.c` is equivalent.
+
 `examples/dummy/dummy.c` has exactly two defects, and both are ones you meet
 constantly. `free()` never clears the slot pointer, and `edit()` reuses the size
 recorded at allocation time, which `free()` also never clears. That is enough to

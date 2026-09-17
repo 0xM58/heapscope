@@ -7,6 +7,13 @@ dist/
 
 # the demo target is a build artifact - `cd examples/dummy && make` regenerates it
 examples/dummy/dummy
+examples/dummy/dummy.dSYM/
+
+# macOS debug bundles, if a build ever happens there by mistake
+*.dSYM/
+
+# snapshot timelines written by `examples/demo.py --snapshots DIR`
+stages/
 
 # layout snapshots are usually project-specific; uncomment to commit them
 # layout.json
