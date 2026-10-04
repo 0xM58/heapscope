@@ -67,6 +67,23 @@ h.unsorted(p.reader)  # the unsorted bin, walked
 h.allocated()       # chunks neither top nor sitting in tcache
 ```
 
+### Exploit-test invariants
+
+Use allocator facts directly in a regression test instead of leaving them as
+comments beside a payload. These assertions only observe the child process;
+they do not build or send a payload.
+
+```python
+heap = p.heap()
+heap.assert_tcache(5, count=2, entries=[first, second])
+heap.assert_heap_pointer(candidate)
+assert heap.chunk_at(first).size == 0x70
+```
+
+For fixtures and diagnostics on glibc 2.32+, `protect_ptr(position, pointer)`
+and `reveal_ptr(position, stored)` implement the allocator's safe-linking
+transform. Use them only after confirming the target libc is safe-linked.
+
 `tcache_perthread_struct` decoding is version-aware. glibc 2.29 uses one byte per
 count; 2.30+ widened them to `uint16_t`, which shifts `entries[]` and the first
 user chunk by 64 bytes. Both layouts are handled and tested.
@@ -147,9 +164,51 @@ heapscope tui stages/            # or, from a checkout: python -m heapscope tui 
 ```
 
 `j`/`k` move, `tab` switches between chunks, tcache bins and a diff against the
-previous snapshot, `n`/`p` change snapshot, `?` explains the keys. The left pane
-is a list; the right pane describes whatever is selected: the raw fields first,
-then a sentence about what they mean.
+previous snapshot, `n`/`p` change snapshot, and `f` toggles **focus mode** to
+hide ordinary live chunks and empty healthy bins. `?` explains every key. The
+left pane is a list; the right pane describes whatever is selected: the raw
+fields first, then a sentence about what they mean. Terminals with colour show
+allocator state, warnings and the selected row distinctly; monochrome terminals
+retain the same readable layout.
+
+For large captures, press `/` to jump to a chunk header or user address. Press
+`:` for the small command palette:
+
+```text
+:filter anomalous       # all, free, tcache, anomalous
+:sort size              # address, size, state
+:find 0x55555555a2b0
+:focus
+```
+
+The findings summary stays in the detail pane as you move around, so a broken
+chain does not disappear just because you selected another row.
+
+### Shareable reports
+
+Snapshots also produce a self-contained HTML investigation report: a timeline,
+heap maps, free-list links, findings and any annotations captured by your
+script. It needs no target, server or JavaScript dependency.
+
+```sh
+heapscope report stages/ -o heap-investigation.html --title "double-free run"
+```
+
+Use `snap.annotate("cleared tcache key through UAF")` before saving a snapshot
+to carry your own explanation into the report. New snapshots record a UTC
+capture time, target command and non-secret platform context; old snapshots
+remain readable.
+
+### Pointer graphs
+
+Export the observed tcache and unsorted-bin links as Graphviz DOT (or JSON for
+other tooling). Broken walks terminate in an explicit dangling node instead of
+being guessed as a valid chunk.
+
+```sh
+heapscope graph stages/ --format dot -o heap.dot
+dot -Tsvg heap.dot -o heap.svg
+```
 
 A chunk that has just landed in a bin is labelled `tcache`, and anything
 anomalous is named at the top of the pane: a chain longer than its own count, a

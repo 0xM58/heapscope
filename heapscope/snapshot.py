@@ -36,6 +36,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -45,7 +48,8 @@ from .heap import HeapDiff
 __all__ = ["HeapSnapshot", "load_snapshots"]
 
 #: Bumped when the on-disk shape changes, so a stale snapshot fails loudly.
-FORMAT = "heapscope.heapview/1"
+FORMAT = "heapscope.heapview/2"
+LEGACY_FORMAT = "heapscope.heapview/1"
 
 
 def _libc_bounds(probe) -> "tuple[Optional[int], Optional[int]]":
@@ -83,6 +87,10 @@ class HeapSnapshot:
     libc_base: Optional[int] = None
     libc_end: Optional[int] = None
     offsets: Dict[str, int] = field(default_factory=dict)
+    captured_at: Optional[str] = None
+    target: List[str] = field(default_factory=list)
+    environment: Dict[str, str] = field(default_factory=dict)
+    annotations: List[str] = field(default_factory=list)
     chunks: List[Dict[str, Any]] = field(default_factory=list)
     tcache: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     format: str = FORMAT
@@ -94,6 +102,14 @@ class HeapSnapshot:
         heap = probe.heap()
 
         snap = cls(label=label, pid=getattr(probe, "pid", None))
+        snap.captured_at = datetime.now(timezone.utc).isoformat()
+        snap.target = [str(arg) for arg in getattr(probe, "argv", [])]
+        # Deliberately small and non-secret: a snapshot should be safe to hand
+        # to a teammate or attach to CI without copying the process environment.
+        snap.environment = {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+        }
         snap.base = heap.base
         snap.region_end = heap.region_end
         snap.truncated = heap.truncated
@@ -171,11 +187,18 @@ class HeapSnapshot:
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "HeapSnapshot":
-        if raw.get("format") != FORMAT:
+        if raw.get("format") not in (FORMAT, LEGACY_FORMAT):
             raise ValueError(
-                "unsupported snapshot format %r (this build writes %r)"
-                % (raw.get("format"), FORMAT))
+                "unsupported snapshot format %r (this build reads %r and %r)"
+                % (raw.get("format"), LEGACY_FORMAT, FORMAT))
         data = dict(raw)
+        # Format 1 did not record contextual metadata.  Defaults make old
+        # captures first-class citizens in the new inspector and reports.
+        data.setdefault("captured_at", None)
+        data.setdefault("target", [])
+        data.setdefault("environment", {})
+        data.setdefault("annotations", [])
+        data["format"] = FORMAT
         data["tcache"] = {int(k): v for k, v in raw.get("tcache", {}).items()}
         return cls(**data)
 
@@ -190,6 +213,12 @@ class HeapSnapshot:
     def load(cls, path: str) -> "HeapSnapshot":
         with open(path) as fh:
             return cls.from_dict(json.load(fh))
+
+    def annotate(self, note: str) -> None:
+        """Attach a short, human explanation to this captured state."""
+        note = str(note).strip()
+        if note:
+            self.annotations.append(note)
 
     def __str__(self) -> str:
         return "heap %r @ %#x chunks=%d tcache_bins=%d%s" % (

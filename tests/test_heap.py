@@ -18,6 +18,8 @@ from heapscope.heap import (
     tcache_entries_offset,
     tcache_index_for_size,
     tcache_size_for_index,
+    protect_ptr,
+    reveal_ptr,
 )
 
 BASE = 0x555555757000
@@ -150,6 +152,10 @@ class TestTcacheMath(unittest.TestCase):
         self.assertEqual(tcache_entries_offset(2), 0x90)
         self.assertEqual(first_chunk_offset(2), 0x290)
 
+    def test_safe_link_helpers_are_reversible(self):
+        position, target = 0x55555555A2B0, 0x55555555B2B0
+        self.assertEqual(reveal_ptr(position, protect_ptr(position, target)), target)
+
 
 class TestSafeLinking(unittest.TestCase):
     """glibc 2.32+ mangles tcache ``next`` pointers.
@@ -238,6 +244,21 @@ class TestHeapView(unittest.TestCase):
         self.assertEqual(bin6.count, 1)
         self.assertEqual(bin6.head, BASE + USER)
         self.assertEqual(bin6.entries, [BASE + USER])
+
+    def test_exploit_invariants_assert_the_observed_tcache_chain(self):
+        view = self.capture()
+        observed = view.assert_tcache(6, count=1, entries=[BASE + USER], truncated=False)
+        self.assertIs(observed, view.tcache[6])
+        with self.assertRaisesRegex(AssertionError, "count: expected 2, got 1"):
+            view.assert_tcache(6, count=2)
+
+    def test_heap_pointer_and_chunk_lookup_helpers(self):
+        view = self.capture()
+        self.assertEqual(view.assert_heap_pointer(BASE + USER), BASE + USER)
+        self.assertIs(view.chunk_at(BASE + USER), view.chunks[0])
+        self.assertIs(view.chunk_at(BASE + FIRST), view.chunks[0])
+        with self.assertRaisesRegex(AssertionError, "outside heap"):
+            view.assert_heap_pointer(0xDEADBEEF)
 
     def test_allocated_excludes_tcache_chunks(self):
         # Regression: tcache entries are user pointers, so the comparison must

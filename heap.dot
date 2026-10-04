@@ -1,0 +1,14 @@
+digraph heapscope {
+  rankdir=LR;
+  node [shape=box style=rounded fontname=Helvetica];
+  "chunk_555555559290" [label="0x555555559290
+0x1010 live" color="#60a5fa"];
+  "chunk_55555555a2a0" [label="0x55555555a2a0
+0x70 live" color="#60a5fa"];
+  "chunk_55555555a310" [label="0x55555555a310
+0x70 live" color="#60a5fa"];
+  "chunk_55555555a380" [label="0x55555555a380
+0x1fc80 top" color="#34d399"];
+  "tcache_5" [label="tcache[5]
+count=0" color="#a78bfa"];
+}

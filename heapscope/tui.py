@@ -24,6 +24,8 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .describe import (
+    TCACHE,
+    UNSORTED,
     WARN,
     bin_facts,
     bin_notes,
@@ -142,6 +144,12 @@ class TuiState:
         self.view = VIEW_CHUNKS
         self.selected = {view: 0 for view in VIEWS}
         self.show_help = False
+        # Focus mode hides ordinary live chunks and empty, healthy bins. Heap
+        # dumps can be large, so this makes allocator state easy to find.
+        self.focused = False
+        self.filter = "all"
+        self.sort = "address"
+        self.notice = ""
 
     # ---- the current snapshot -------------------------------------------
     @property
@@ -163,16 +171,55 @@ class TuiState:
     # ---- selection ------------------------------------------------------
     def bin_indexes(self) -> List[int]:
         snap = self.snapshot
-        return sorted(snap.tcache) if snap is not None else []
+        if snap is None:
+            return []
+        indexes = sorted(snap.tcache)
+        if not self.focused:
+            return indexes
+        flagged = {finding.scope for finding in self.findings()}
+        return [index for index in indexes
+                if snap.tcache[index]["count"]
+                or "tcache[%d]" % index in flagged]
+
+    def chunk_indexes(self) -> List[int]:
+        """Indexes visible in the chunk list, respecting focus mode."""
+        snap = self.snapshot
+        if snap is None:
+            return []
+        indexes = list(range(len(snap.chunks)))
+        states = snapshot_states(snap)
+        if self.filter == "tcache":
+            indexes = [index for index in indexes
+                       if states.get(snap.chunks[index]["header"]) == TCACHE]
+        elif self.filter == "free":
+            indexes = [index for index in indexes
+                       if states.get(snap.chunks[index]["header"]) in (TCACHE, UNSORTED)]
+        elif self.filter == "anomalous":
+            bad_bins = {f.scope for f in self.findings() if f.level == WARN}
+            indexes = [index for index in indexes if any(
+                snap.chunks[index]["addr"] in b["entries"]
+                and "tcache[%d]" % bindex in bad_bins
+                for bindex, b in snap.tcache.items())]
+        elif self.focused:
+            indexes = [index for index in indexes
+                       if states.get(snap.chunks[index]["header"], "live") != "live"]
+        if self.sort == "size":
+            indexes.sort(key=lambda index: (snap.chunks[index]["size"],
+                                             snap.chunks[index]["header"]))
+        elif self.sort == "state":
+            indexes.sort(key=lambda index: (states.get(snap.chunks[index]["header"]),
+                                             snap.chunks[index]["header"]))
+        return indexes
 
     def selected_chunk(self) -> Optional[Dict[str, Any]]:
         snap = self.snapshot
         if snap is None or self.view != VIEW_CHUNKS:
             return None
+        indexes = self.chunk_indexes()
         i = self.selected[VIEW_CHUNKS]
-        if not 0 <= i < len(snap.chunks):
+        if not 0 <= i < len(indexes):
             return None
-        return snap.chunks[i]
+        return snap.chunks[indexes[i]]
 
     def selected_bin(self) -> Optional[int]:
         indexes = self.bin_indexes()
@@ -196,20 +243,19 @@ class TuiState:
             return self._bin_rows(snap)
         return self._diff_rows(snap)
 
-    @staticmethod
-    def _chunk_rows(snap: HeapSnapshot) -> List[str]:
+    def _chunk_rows(self, snap: HeapSnapshot) -> List[str]:
         states = snapshot_states(snap)
         rows = []
-        for chunk in snap.chunks:
+        for index in self.chunk_indexes():
+            chunk = snap.chunks[index]
             state = states.get(chunk["header"], "live")
             rows.append("%-16s %-8s %s"
                         % (hexfmt(chunk["header"]), "%#x" % chunk["size"], state))
         return rows
 
-    @staticmethod
-    def _bin_rows(snap: HeapSnapshot) -> List[str]:
+    def _bin_rows(self, snap: HeapSnapshot) -> List[str]:
         rows = []
-        for index in sorted(snap.tcache):
+        for index in self.bin_indexes():
             b = snap.tcache[index]
             rows.append("[%d]%s x%-3d %-7s %s"
                         % (index,
@@ -293,6 +339,20 @@ class TuiState:
         """The right-hand pane, wrapped to *width*, as a flat list of lines."""
         out: List[str] = []
 
+        # This is intentionally global, not selection-dependent: a warning
+        # should remain in sight while someone compares rows in the left pane.
+        global_warnings = [f for f in self.findings() if f.level == WARN]
+        if global_warnings:
+            out.append("snapshot findings (%d)" % len(global_warnings))
+            for finding in global_warnings[:3]:
+                scope = finding.scope + ": "
+                wrapped = _wrap(scope + finding.message, max(1, width - 4))
+                out.append("[W] " + wrapped[0])
+                out.extend("    " + line for line in wrapped[1:])
+            if len(global_warnings) > 3:
+                out.append("    ... %d more" % (len(global_warnings) - 3))
+            out.append("")
+
         findings = self.local_findings()
         if findings:
             out.append("findings")
@@ -341,10 +401,18 @@ class TuiState:
         warnings = sum(1 for f in self.findings() if f.level == WARN)
         if warnings:
             parts.append("%d warning%s" % (warnings, "" if warnings == 1 else "s"))
+        if self.focused:
+            parts.append("focus")
+        if self.filter != "all":
+            parts.append("filter=" + self.filter)
+        if self.sort != "address":
+            parts.append("sort=" + self.sort)
+        if self.notice:
+            parts.append(self.notice)
         return "   ".join(parts)
 
     def footer_line(self) -> str:
-        return (" j/k move   tab view   n/p snapshot   g/G ends   ? help   q quit")
+        return (" j/k move  : command  / find  f focus  n/p snapshot  ? help  q quit")
 
     # ---- navigation -----------------------------------------------------
     def move(self, delta: int) -> None:
@@ -390,6 +458,65 @@ class TuiState:
             self.selected[view] = max(0, min(max(0, count - 1),
                                              self.selected[view]))
 
+    def toggle_focus(self) -> None:
+        """Show only allocator-relevant rows, or restore the complete list."""
+        self.focused = not self.focused
+        if self.focused:
+            self.filter = "all"
+        self._clamp()
+
+    def set_filter(self, mode: str) -> bool:
+        if mode not in ("all", "free", "tcache", "anomalous"):
+            return False
+        self.filter, self.focused = mode, False
+        self._clamp()
+        return True
+
+    def set_sort(self, mode: str) -> bool:
+        if mode not in ("address", "size", "state"):
+            return False
+        self.sort = mode
+        self._clamp()
+        return True
+
+    def find_address(self, text: str) -> bool:
+        """Select a chunk by header or user address; accepts decimal or hex."""
+        try:
+            needle = int(text.strip(), 0)
+        except ValueError:
+            return False
+        snap = self.snapshot
+        if snap is None:
+            return False
+        self.set_view(VIEW_CHUNKS)
+        visible = self.chunk_indexes()
+        for position, index in enumerate(visible):
+            chunk = snap.chunks[index]
+            if needle in (chunk["header"], chunk["addr"]):
+                self.selected[VIEW_CHUNKS] = position
+                return True
+        return False
+
+    def command(self, text: str) -> str:
+        """Run one palette command. The result is suitable for a status line."""
+        words = text.strip().split(None, 1)
+        if not words:
+            return ""
+        name, argument = words[0].lower(), words[1] if len(words) == 2 else ""
+        if name in ("find", "goto"):
+            return "selected %s" % argument if self.find_address(argument) else "address not visible: %s" % argument
+        if name == "filter":
+            return "filter: %s" % argument if self.set_filter(argument) else "filter: all, free, tcache, anomalous"
+        if name == "sort":
+            return "sort: %s" % argument if self.set_sort(argument) else "sort: address, size, state"
+        if name == "focus":
+            self.toggle_focus()
+            return "focus %s" % ("on" if self.focused else "off")
+        if name == "help":
+            self.show_help = True
+            return ""
+        return "unknown command: %s" % name
+
 
 # ---------------------------------------------------------------------------
 # Rendering
@@ -433,6 +560,9 @@ def _help_lines() -> List[str]:
         "1 2 3                 jump straight to a view",
         "n / p                 next and previous snapshot",
         "g / G                 first and last row",
+        "f                     focus: hide ordinary live / empty rows",
+        ":                     command palette (filter, sort, find, focus)",
+        "/                     find a chunk header or user address",
         "?                     this help",
         "q, esc                quit",
         "",
@@ -521,18 +651,34 @@ class TuiApp:
     def __init__(self, state: TuiState) -> None:
         self.state = state
         self.chars = default_chars()
+        self.colors: Dict[str, int] = {}
+        self.status = ""
 
     # ---- drawing --------------------------------------------------------
     def draw(self, screen) -> None:
         height, width = screen.getmaxyx()
         for y, line in enumerate(render(self.state, width, height, self.chars)):
-            self._write(screen, y, line)
+            self._write(screen, y, line, self._line_style(y, line))
 
-    def _write(self, screen, y: int, line: str) -> None:
+    def _line_style(self, y: int, line: str) -> int:
+        """Pick a semantic colour without putting ANSI escapes in render()."""
+        if y == 0:
+            return self.colors.get("header", 0)
+        if line.startswith(">"):
+            return self.colors.get("selected", 0)
+        if "[W]" in line or "warning" in line:
+            return self.colors.get("warning", 0)
+        if "tcache" in line or "unsorted" in line:
+            return self.colors.get("allocator", 0)
+        return 0
+
+    def _write(self, screen, y: int, line: str, style: int = 0) -> None:
         # Writing the bottom-right cell raises, so fall back to one character
         # less. A terminal that cannot encode the box characters falls back to
         # ASCII for good rather than failing every frame.
         try:
+            if style and hasattr(screen, "attron"):
+                screen.attron(style)
             screen.addstr(y, 0, line)
         except curses.error:
             try:
@@ -541,6 +687,24 @@ class TuiApp:
                 pass
         except UnicodeEncodeError:
             self.chars = ASCII_CHARS
+        finally:
+            if style and hasattr(screen, "attroff"):
+                screen.attroff(style)
+
+    def _prompt(self, screen, prefix: str) -> str:
+        """Read a short palette command without contaminating the pure renderer."""
+        height, width = screen.getmaxyx()
+        try:
+            screen.move(max(0, height - 1), 0)
+            screen.clrtoeol()
+            screen.addstr(max(0, height - 1), 0, _fit(prefix, width - 1))
+            curses.echo()
+            raw = screen.getstr(max(0, height - 1), min(len(prefix), max(0, width - 1)), 120)
+            return raw.decode("utf-8", "replace")
+        except curses.error:
+            return ""
+        finally:
+            curses.noecho()
 
     # ---- input ----------------------------------------------------------
     def handle(self, key: int) -> bool:
@@ -579,13 +743,40 @@ class TuiApp:
             state.to_top()
         elif key == ord("G"):
             state.to_bottom()
+        elif key == ord("f"):
+            state.toggle_focus()
+        elif key == ord(":"):
+            state.notice = state.command(self._prompt(self.screen, ":"))
+        elif key == ord("/"):
+            query = self._prompt(self.screen, "find: ")
+            state.notice = ("selected %s" % query if state.find_address(query)
+                            else "address not visible: %s" % query)
         elif key == ord("?"):
             state.show_help = True
         return True
 
     def main(self, screen) -> None:
+        self.screen = screen
         curses.curs_set(0)
         screen.keypad(True)
+        if curses.has_colors():
+            try:
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_CYAN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                curses.init_pair(3, curses.COLOR_RED, -1)
+                curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_CYAN)
+                self.colors = {
+                    "header": curses.color_pair(1) | curses.A_BOLD,
+                    "allocator": curses.color_pair(2),
+                    "warning": curses.color_pair(3) | curses.A_BOLD,
+                    "selected": curses.color_pair(4) | curses.A_BOLD,
+                }
+            except curses.error:
+                # Colour is progressive enhancement, never a reason not to
+                # inspect a snapshot on an odd or minimal terminal.
+                self.colors = {}
         while True:
             self.draw(screen)
             screen.refresh()

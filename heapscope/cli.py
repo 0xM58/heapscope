@@ -13,6 +13,7 @@ and browse a set of saved heap snapshots in a terminal.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import List, Optional
 
@@ -132,6 +133,47 @@ def _cmd_tui(args) -> int:
     return run(snapshots)
 
 
+def _cmd_report(args) -> int:
+    from .report import html_report
+
+    snapshots = _load_snapshots_or_report(args)
+    if snapshots is None:
+        return 1
+    try:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(html_report(snapshots, title=args.title))
+    except OSError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    print("wrote %s (%d snapshots)" % (args.output, len(snapshots)))
+    return 0
+
+
+def _cmd_graph(args) -> int:
+    from .graph import snapshot_graph
+
+    snapshots = _load_snapshots_or_report(args)
+    if snapshots is None:
+        return 1
+    try:
+        snapshot = snapshots[args.snapshot]
+    except IndexError:
+        print("error: snapshot index %d is out of range" % args.snapshot, file=sys.stderr)
+        return 2
+    graph = snapshot_graph(snapshot)
+    output = graph.to_dot() if args.format == "dot" else json.dumps(graph.to_dict(), indent=2)
+    try:
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output)
+        else:
+            print(output)
+    except OSError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    return 0
+
+
 def _hex(value: Optional[int]) -> str:
     return "n/a" if value is None else "%#x" % value
 
@@ -159,6 +201,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_tui = sub.add_parser("tui", help="browse saved heap snapshots in a terminal")
     p_tui.add_argument("paths", nargs="+", help="snapshot files or directories")
     p_tui.set_defaults(func=_cmd_tui)
+
+    p_report = sub.add_parser("report", help="write a self-contained HTML heap report")
+    p_report.add_argument("paths", nargs="+", help="snapshot files or directories")
+    p_report.add_argument("-o", "--output", default="heapscope-report.html",
+                          help="report path (default: heapscope-report.html)")
+    p_report.add_argument("--title", default="heapscope report", help="report title")
+    p_report.set_defaults(func=_cmd_report)
+
+    p_graph = sub.add_parser("graph", help="export an allocator pointer graph")
+    p_graph.add_argument("paths", nargs="+", help="snapshot files or directories")
+    p_graph.add_argument("--snapshot", type=int, default=-1,
+                         help="snapshot index to export (default: last)")
+    p_graph.add_argument("--format", choices=("dot", "json"), default="dot")
+    p_graph.add_argument("-o", "--output", help="write to a file instead of stdout")
+    p_graph.set_defaults(func=_cmd_graph)
 
     args = parser.parse_args(argv)
     return args.func(args)

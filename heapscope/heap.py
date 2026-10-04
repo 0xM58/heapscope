@@ -22,7 +22,10 @@ from .errors import HeapCorrupt
 from .glibc import GlibcLayout
 from .memory import MemReader
 
-__all__ = ["Chunk", "TcacheBin", "HeapDiff", "HeapView", "TCACHE_MAX_BINS"]
+__all__ = [
+    "Chunk", "TcacheBin", "HeapDiff", "HeapView", "TCACHE_MAX_BINS",
+    "protect_ptr", "reveal_ptr",
+]
 
 #: Chunk header size: prev_size + size.
 CHUNK_HDR = 0x10
@@ -47,6 +50,21 @@ TCACHE_COUNTS_OFF = 0x10
 #: Default cap on how many bytes of a chunk are hashed when diffing. Bounds
 #: the cost of a diff on a heap holding large buffers.
 DEFAULT_SAMPLE = 0x1000
+
+
+def protect_ptr(position: int, pointer: int) -> int:
+    """Encode a glibc safe-linked pointer stored at *position*.
+
+    This is the allocator's reversible ``(position >> 12) ^ pointer``
+    transform.  It is exposed for assertions and fixture construction: callers
+    still need to establish that their target libc actually uses safe-linking.
+    """
+    return (position >> 12) ^ pointer
+
+
+def reveal_ptr(position: int, stored: int) -> int:
+    """Decode a glibc safe-linked pointer stored at *position*."""
+    return protect_ptr(position, stored)
 
 
 def tcache_index_for_size(size: int) -> int:
@@ -288,13 +306,20 @@ class HeapView:
                 seen.add(cur)
                 entries.append(cur)
 
+                # The count is authoritative.  Do not interpret the first
+                # word of the final entry when the declared chain is already
+                # complete: it may be ordinary stale user data and is not
+                # evidence of a broken link.
+                if len(entries) >= count:
+                    break
+
                 raw = reader.try_u64(cur)
                 if raw is None:
                     truncated = True
                     break
                 if safe_linked:
                     # stored = (address_of_next_field >> 12) ^ next
-                    raw = (cur >> 12) ^ raw
+                    raw = reveal_ptr(cur, raw)
                 # Demangling must happen before this test, not after. The last
                 # chunk in a safe-linked chain stores (pos >> 12) ^ 0, which is
                 # not zero on disk, so testing the raw value for zero would walk
@@ -358,6 +383,50 @@ class HeapView:
             if c.is_top:
                 return c
         return None
+
+    def contains(self, pointer: int) -> bool:
+        """Whether *pointer* falls inside the captured brk heap region."""
+        end = self.region_end or (self.base + 0x1000_0000)
+        return self.base <= pointer < end
+
+    def chunk_at(self, pointer: int) -> Optional[Chunk]:
+        """Find a chunk by either its header or user pointer."""
+        for chunk in self.chunks:
+            if pointer in (chunk.header, chunk.addr):
+                return chunk
+        return None
+
+    def assert_tcache(self, index: int, *, count: Optional[int] = None,
+                      entries: Optional[Iterable[int]] = None,
+                      truncated: Optional[bool] = None) -> TcacheBin:
+        """Assert an exact tcache invariant and return the observed bin.
+
+        Designed for exploit regression tests: a libc update or a small change
+        in grooming fails at the allocator fact that moved, rather than at a
+        later, opaque crash.
+        """
+        bin_ = self.tcache.get(index)
+        if bin_ is None:
+            raise AssertionError("tcache[%d] is absent" % index)
+        if count is not None and bin_.count != count:
+            raise AssertionError("tcache[%d] count: expected %d, got %d"
+                                 % (index, count, bin_.count))
+        if entries is not None:
+            expected = list(entries)
+            if bin_.entries != expected:
+                raise AssertionError("tcache[%d] entries: expected %s, got %s"
+                                     % (index, expected, bin_.entries))
+        if truncated is not None and bin_.truncated != truncated:
+            raise AssertionError("tcache[%d] truncated: expected %s, got %s"
+                                 % (index, truncated, bin_.truncated))
+        return bin_
+
+    def assert_heap_pointer(self, pointer: int) -> int:
+        """Assert that *pointer* targets the captured heap, returning it."""
+        if not self.contains(pointer):
+            raise AssertionError("pointer %#x is outside heap %#x-%#x" % (
+                pointer, self.base, self.region_end or self.base + 0x1000_0000))
+        return pointer
 
     def allocated(self) -> List[Chunk]:
         """Chunks that are neither the top chunk nor sitting in tcache.

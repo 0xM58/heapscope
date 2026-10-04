@@ -356,6 +356,44 @@ class TestStateRows(unittest.TestCase):
         self.assertEqual(len(state.rows(VIEW_BINS)), 1)
         self.assertEqual(len(state.rows(VIEW_CHUNKS)), 3)
 
+    def test_focus_hides_live_chunks_but_keeps_allocator_state(self):
+        live = chunk(0x4000, 0x70)
+        state = state_for([build("x", [live, one_snapshot().chunks[0],
+                                      one_snapshot().chunks[1],
+                                      one_snapshot().chunks[2]],
+                                 one_snapshot().tcache)])
+        state.toggle_focus()
+        rows = state.rows()
+        self.assertEqual(len(rows), 3)
+        self.assertNotIn("0x4000", " ".join(rows))
+        self.assertIn("tcache", " ".join(rows))
+
+    def test_focus_keeps_a_flagged_empty_bin(self):
+        state = state_for([build("x", [], {5: bin_(5, 0, head=STALE_HEAD),
+                                             7: bin_(7, 0)})])
+        state.set_view(VIEW_BINS)
+        state.toggle_focus()
+        self.assertEqual(len(state.rows()), 1)
+        self.assertIn("[5]", state.rows()[0])
+
+    def test_palette_filters_sorts_and_finds(self):
+        live = chunk(0x1000, 0x90)
+        free = chunk(0x2000, 0x70)
+        state = state_for([build("x", [live, free],
+                                 {5: bin_(5, 1, head=free["addr"],
+                                          entries=[free["addr"]])})])
+        self.assertEqual(state.command("filter tcache"), "filter: tcache")
+        self.assertEqual(len(state.rows()), 1)
+        self.assertIn("0x2000", state.rows()[0])
+        self.assertEqual(state.command("sort size"), "sort: size")
+        self.assertEqual(state.command("find 0x2010"), "selected 0x2010")
+        self.assertEqual(state.selected_chunk()["header"], 0x2000)
+
+    def test_palette_explains_invalid_commands(self):
+        state = state_for()
+        self.assertIn("filter: all", state.command("filter impossible"))
+        self.assertIn("unknown command", state.command("blastoff"))
+
 
 class TestStateSelection(unittest.TestCase):
     def test_the_selected_chunk_follows_the_cursor(self):
@@ -638,6 +676,13 @@ class TestKeyHandling(unittest.TestCase):
         self.assertEqual(app.state.selected[VIEW_CHUNKS], 2)
         app.handle(ord("g"))
         self.assertEqual(app.state.selected[VIEW_CHUNKS], 0)
+
+    def test_f_toggles_focus_mode(self):
+        app = self.app()
+        self.assertFalse(app.state.focused)
+        app.handle(ord("f"))
+        self.assertTrue(app.state.focused)
+        self.assertIn("focus", app.state.header_line())
 
     def test_question_mark_opens_help(self):
         app = self.app()

@@ -52,6 +52,26 @@ class TestRoundTrip(unittest.TestCase):
         with self.assertRaises(ValueError):
             HeapSnapshot.from_dict(raw)
 
+    def test_annotations_and_context_round_trip(self):
+        snap = build("x", [])
+        snap.captured_at = "2026-10-04T12:00:00+00:00"
+        snap.target = ["./chall", "--quiet"]
+        snap.environment = {"platform": "Linux"}
+        snap.annotate("before allocator call")
+        back = HeapSnapshot.from_dict(snap.to_dict())
+        self.assertEqual(back.annotations, ["before allocator call"])
+        self.assertEqual(back.target, ["./chall", "--quiet"])
+        self.assertEqual(back.environment, {"platform": "Linux"})
+
+    def test_a_format_one_capture_remains_loadable(self):
+        raw = build("x", []).to_dict()
+        raw["format"] = "heapscope.heapview/1"
+        for key in ("captured_at", "target", "environment", "annotations"):
+            raw.pop(key, None)
+        back = HeapSnapshot.from_dict(raw)
+        self.assertEqual(back.annotations, [])
+        self.assertEqual(back.target, [])
+
 
 class TestLoadSnapshots(unittest.TestCase):
     def test_a_directory_expands_sorted_by_name(self):

@@ -44,11 +44,15 @@ from .heap import (
     tcache_entries_offset,
     tcache_index_for_size,
     tcache_size_for_index,
+    protect_ptr,
+    reveal_ptr,
 )
 from .memory import MapRegion, MemReader, MemoryMap
 from .probe import Diagnosis, Probe
 from .describe import Finding, classify_chunk, snapshot_findings
 from .snapshot import HeapSnapshot
+from .report import html_report
+from .graph import GraphEdge, GraphNode, HeapGraph, snapshot_graph
 
 __version__ = "0.1.0"
 
@@ -71,6 +75,8 @@ __all__ = [
     "HeapDiff",
     "tcache_index_for_size",
     "tcache_size_for_index",
+    "protect_ptr",
+    "reveal_ptr",
     "tcache_entries_offset",
     "first_chunk_offset",
     # assertions
@@ -78,6 +84,11 @@ __all__ = [
     "assert_layout",
     # snapshots and the two front ends
     "HeapSnapshot",
+    "html_report",
+    "GraphNode",
+    "GraphEdge",
+    "HeapGraph",
+    "snapshot_graph",
     "Finding",
     "classify_chunk",
     "snapshot_findings",
